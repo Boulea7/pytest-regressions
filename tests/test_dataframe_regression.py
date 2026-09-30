@@ -164,6 +164,258 @@ def test_different_data_types(
         dataframe_regression.check(pd.DataFrame.from_dict({"data1": data1}))
 
 
+def test_multiindex_columns_tolerance(dataframe_regression, no_regen):
+    df = pd.DataFrame(
+        [[1.1, 2.2], [3.3, 4.4]],
+        columns=pd.MultiIndex.from_tuples([("a", "x"), ("a", "y")]),
+    )
+    dataframe_regression.check(df)
+
+    df.iloc[0, 0] += 0.01
+    dataframe_regression.check(df, default_tolerance=dict(atol=0.1, rtol=1e-17))
+
+    df.iloc[0, 0] += 0.2
+    with pytest.raises(AssertionError, match="Values are not sufficiently close"):
+        dataframe_regression.check(df, default_tolerance=dict(atol=0.1, rtol=1e-17))
+
+
+@pytest.mark.parametrize("column_levels", [1, 2, 3])
+@pytest.mark.parametrize("index_name", [None, "rows"])
+@pytest.mark.parametrize("index_levels", [1, 2])
+def test_column_header_tolerance(
+    dataframe_regression, tmp_path, column_levels, index_name, index_levels
+):
+    if column_levels == 1:
+        columns = pd.Index(["x", "y"])
+    else:
+        columns = pd.MultiIndex.from_tuples(
+            [tuple(["a", value, "unit"][:column_levels]) for value in ("x", "y")]
+        )
+    if index_levels == 1:
+        index = pd.Index(["first", "second"], name=index_name)
+        changed_index = pd.Index(["changed", "second"], name=index_name)
+    else:
+        index_names = [None, None] if index_name is None else ["group", index_name]
+        index = pd.MultiIndex.from_tuples(
+            [("a", "first"), ("a", "second")], names=index_names
+        )
+        changed_index = pd.MultiIndex.from_tuples(
+            [("a", "changed"), ("a", "second")], names=index_names
+        )
+    df = pd.DataFrame(
+        [[1.1, 2.2], [3.3, 4.4]],
+        columns=columns,
+        index=index,
+    )
+    baseline = tmp_path / "baseline.csv"
+    df.to_csv(baseline, float_format="%.17g")
+    dataframe_regression.check(df, fullpath=baseline)
+
+    df.iloc[0, 0] += 0.01
+    dataframe_regression.check(
+        df, fullpath=baseline, default_tolerance=dict(atol=0.1, rtol=1e-17)
+    )
+
+    df.index = changed_index
+    with pytest.raises(AssertionError, match="Values are not sufficiently close"):
+        dataframe_regression.check(
+            df, fullpath=baseline, default_tolerance=dict(atol=0.1, rtol=1e-17)
+        )
+
+
+@pytest.mark.parametrize("column_levels", [1, 2, 3])
+@pytest.mark.parametrize("index_name", [None, "rows"])
+def test_multiindex_column_tolerances(
+    dataframe_regression, tmp_path, column_levels, index_name
+):
+    df = pd.DataFrame(
+        [[1.1, 2.2], [3.3, 4.4]],
+        columns=pd.MultiIndex.from_tuples(
+            [
+                (
+                    (value,)
+                    if column_levels == 1
+                    else tuple(["a", value, "unit"][:column_levels])
+                )
+                for value in ("x", "y")
+            ]
+        ),
+        index=pd.Index(["first", "second"], name=index_name),
+    )
+    baseline = tmp_path / "baseline.csv"
+    df.to_csv(baseline, float_format="%.17g")
+    dataframe_regression.check(df, fullpath=baseline)
+    df.iloc[0, 0] += 0.01
+    dataframe_regression.check(
+        df,
+        fullpath=baseline,
+        tolerances={df.columns[0]: dict(atol=0.1, rtol=1e-17)},
+        default_tolerance=dict(atol=1e-17, rtol=1e-17),
+    )
+    df.iloc[0, 1] += 0.01
+    with pytest.raises(AssertionError) as excinfo:
+        dataframe_regression.check(
+            df,
+            fullpath=baseline,
+            tolerances={df.columns[0]: dict(atol=0.1, rtol=1e-17)},
+            default_tolerance=dict(atol=1e-17, rtol=1e-17),
+        )
+    assert f"{df.columns[0]}:\n" not in str(excinfo.value)
+    assert f"{df.columns[1]}:\n" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "columns",
+    [
+        pd.MultiIndex.from_tuples([("a", "renamed"), ("a", "y")]),
+        pd.MultiIndex.from_tuples([("a", "x", "unit"), ("a", "y", "unit")]),
+        pd.Index(["x", "y"]),
+    ],
+)
+def test_multiindex_column_changes(dataframe_regression, tmp_path, columns):
+    df = pd.DataFrame(
+        [[1.1, 2.2], [3.3, 4.4]],
+        columns=pd.MultiIndex.from_tuples([("a", "x"), ("a", "y")]),
+    )
+    baseline = tmp_path / "baseline.csv"
+    df.to_csv(baseline, float_format="%.17g")
+    df.columns = columns
+    with pytest.raises(
+        AssertionError, match="Could not find key|Obtained and expected data shape"
+    ):
+        dataframe_regression.check(df, fullpath=baseline)
+
+
+@pytest.mark.parametrize("index_name", [None, "rows"])
+@pytest.mark.parametrize("first_value", [1, 2**53])
+@pytest.mark.parametrize("column_levels", [1, 2])
+def test_multiindex_integer_tolerance(
+    dataframe_regression, tmp_path, index_name, first_value, column_levels
+):
+    df = pd.DataFrame(
+        [[first_value, 2], [first_value + 2, 4]],
+        columns=(
+            pd.MultiIndex.from_arrays([["x", "y"]])
+            if column_levels == 1
+            else pd.MultiIndex.from_tuples([("a", "x"), ("a", "y")])
+        ),
+        index=pd.Index(["first", "second"], name=index_name),
+    )
+    baseline = tmp_path / "baseline.csv"
+    df.to_csv(baseline)
+    df.iloc[0, 0] += 1
+    with pytest.raises(AssertionError, match="Values are not sufficiently close"):
+        dataframe_regression.check(
+            df, fullpath=baseline, default_tolerance=dict(atol=10)
+        )
+
+
+@pytest.mark.parametrize("index_name", [None, "rows", 0, "", "row,\nlabel"])
+@pytest.mark.parametrize("index_levels", [1, 2])
+@pytest.mark.parametrize("column_levels", [1, 2])
+def test_multiindex_index_names(
+    dataframe_regression, tmp_path, index_name, index_levels, column_levels
+):
+    if index_levels == 1:
+        index = pd.Index(["first", "second"], name=index_name)
+    else:
+        index = pd.MultiIndex.from_tuples(
+            [("a", "first"), ("a", "second")], names=[None, index_name]
+        )
+    df = pd.DataFrame(
+        [[1.1, 2.2], [3.3, 4.4]],
+        columns=(
+            pd.MultiIndex.from_arrays([["x", "y"]], names=["group,\nlabel"])
+            if column_levels == 1
+            else pd.MultiIndex.from_tuples(
+                [("a", "x"), ("a", "y")], names=["group,\nlabel", "value"]
+            )
+        ),
+        index=index,
+    )
+    baseline = tmp_path / "baseline.csv"
+    df.to_csv(baseline, float_format="%.17g")
+    dataframe_regression.check(df, fullpath=baseline)
+    df.iloc[0, 0] += 0.01
+    dataframe_regression.check(
+        df, fullpath=baseline, default_tolerance=dict(atol=0.1, rtol=1e-17)
+    )
+
+    if index_levels == 1:
+        df.index.name = "changed"
+    else:
+        df.index = df.index.set_names([None, "changed"])
+    with pytest.raises(AssertionError):
+        dataframe_regression.check(
+            df, fullpath=baseline, default_tolerance=dict(atol=0.1, rtol=1e-17)
+        )
+
+
+def test_multiindex_column_level_names(dataframe_regression, tmp_path):
+    df = pd.DataFrame(
+        [[1.1, 2.2], [3.3, 4.4]],
+        columns=pd.MultiIndex.from_tuples(
+            [("a", "x"), ("a", "y")], names=["group", "value"]
+        ),
+    )
+    baseline = tmp_path / "baseline.csv"
+    df.to_csv(baseline, float_format="%.17g")
+    df.columns.names = ["changed", "value"]
+    with pytest.raises(AssertionError, match="Could not find key"):
+        dataframe_regression.check(df, fullpath=baseline)
+
+
+@pytest.mark.parametrize("index_name", [None, "rows"])
+def test_multiindex_first_row_na(dataframe_regression, tmp_path, index_name):
+    df = pd.DataFrame(
+        [[np.nan, np.nan], [1.1, 2.2]],
+        columns=pd.MultiIndex.from_tuples([("a", "x"), ("a", "y")]),
+        index=pd.Index(["first", "second"], name=index_name),
+    )
+    baseline = tmp_path / "baseline.csv"
+    df.to_csv(baseline, float_format="%.17g")
+    dataframe_regression.check(df, fullpath=baseline)
+    df.iloc[1, 0] += 0.01
+    dataframe_regression.check(
+        df, fullpath=baseline, default_tolerance=dict(atol=0.1, rtol=1e-17)
+    )
+    df.index = pd.Index(["changed", "second"], name=index_name)
+    with pytest.raises(AssertionError, match="Values are not sufficiently close"):
+        dataframe_regression.check(
+            df, fullpath=baseline, default_tolerance=dict(atol=0.1, rtol=1e-17)
+        )
+
+
+@pytest.mark.parametrize("index_name", [None, "rows"])
+def test_multiindex_empty_numeric_frame(dataframe_regression, tmp_path, index_name):
+    df = pd.DataFrame(
+        np.empty((0, 2)),
+        columns=pd.MultiIndex.from_tuples([("a", "x"), ("a", "y")]),
+        index=pd.Index([], name=index_name),
+    )
+    baseline = tmp_path / "baseline.csv"
+    df.to_csv(baseline, float_format="%.17g")
+    dataframe_regression.check(df, fullpath=baseline)
+    df.loc["first"] = [1.1, 2.2]
+    with pytest.raises(AssertionError):
+        dataframe_regression.check(df, fullpath=baseline)
+
+
+def test_multiindex_numeric_categorical(dataframe_regression, tmp_path):
+    df = pd.DataFrame(
+        {("a", "x"): pd.Categorical([1, 3], categories=[1, 2, 3])},
+        index=pd.Index(["first", "second"], name="rows"),
+    )
+    baseline = tmp_path / "baseline.csv"
+    df.to_csv(baseline)
+    dataframe_regression.check(df, fullpath=baseline)
+    df.iloc[0, 0] = 2
+    with pytest.raises(AssertionError, match="Values are not sufficiently close"):
+        dataframe_regression.check(
+            df, fullpath=baseline, default_tolerance=dict(atol=10)
+        )
+
+
 class Foo:
     def __init__(self, bar):
         self.bar = bar
