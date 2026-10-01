@@ -49,6 +49,50 @@ def test_usage_workflow(pytester, monkeypatch):
     )
 
 
+@pytest.mark.parametrize("column_levels", [1, 2])
+@pytest.mark.parametrize("rows", [0, 1])
+def test_force_regen_after_column_header_growth(pytester, column_levels, rows):
+    data = [[1, 2]] if rows else []
+    columns = (
+        'pd.Index(["x", "y"])'
+        if column_levels == 1
+        else 'pd.MultiIndex.from_tuples([("a", "x"), ("a", "y")])'
+    )
+    source = """
+        import pandas as pd
+
+        def test_frame(dataframe_regression):
+            frame = pd.DataFrame({data}, columns={columns}, dtype="int64")
+            dataframe_regression.check(frame)
+    """
+    pytester.makepyfile(test_dataframe=source.format(data=data, columns=columns))
+    result = pytester.runpytest("--regen-all")
+    result.assert_outcomes(passed=1)
+    baseline = pytester.path / "test_dataframe" / "test_frame.csv"
+    old_contents = baseline.read_text(encoding="utf-8")
+
+    columns = 'pd.MultiIndex.from_tuples([("a", "x", "unit"), ("a", "y", "unit")])'
+    pytester.makepyfile(test_dataframe=source.format(data=data, columns=columns))
+    result = pytester.runpytest()
+    result.assert_outcomes(failed=1)
+    assert baseline.read_text(encoding="utf-8") == old_contents
+
+    result = pytester.runpytest("--force-regen")
+    result.assert_outcomes(failed=1)
+    expected_contents = ",a,a\n,x,y\n,unit,unit\n"
+    if rows:
+        expected_contents += "0,1,2\n"
+    assert (
+        baseline.read_text(encoding="utf-8") == expected_contents
+    ), result.stdout.str()
+    result.stdout.fnmatch_lines(
+        ["*Files differ and --force-regen set, regenerating file at:*"]
+    )
+
+    result = pytester.runpytest()
+    result.assert_outcomes(passed=1)
+
+
 def test_common_cases(dataframe_regression: DataFrameRegressionFixture, no_regen):
     # Most common case: Data is valid, is present and should pass
     data1 = 1.1 * np.ones(5000)

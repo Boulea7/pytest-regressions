@@ -139,7 +139,13 @@ class DataFrameRegressionFixture:
             read_csv_options["engine"] = "python"
 
         obtained_data = pd.read_csv(str(obtained_filename), **read_csv_options)
-        expected_data = pd.read_csv(str(expected_filename), **read_csv_options)
+        try:
+            expected_data = pd.read_csv(str(expected_filename), **read_csv_options)
+        except pd.errors.ParserError as error:
+            raise AssertionError(
+                f"Could not parse the expected results.\n{error}\n"
+                "To update values, use --force-regen option.\n"
+            ) from error
         if has_multiindex_columns and column_levels == 1:
             # A one-row CSV header is otherwise parsed as a flat Index.
             for frame in (obtained_data, expected_data):
